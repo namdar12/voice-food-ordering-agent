@@ -34,6 +34,8 @@ class FlowManager:
         if self.state == "end":
             if self.customer_email:  # If we already have an email, don't ask again
                 return {"response": "Your order is complete! Thank you for your order."}
+
+            # Check if input contains an email
             if "@" in user_input and "." in user_input:
                 self.customer_email = user_input
                 order_details = self._format_order_details()
@@ -57,8 +59,10 @@ class FlowManager:
                         return {
                             "response": "Your order is complete, but I couldn't send the confirmation email. Please contact support."
                         }
+
+            # If no email provided, ask for it
             return {
-                "response": "Would you like to provide an email address for order confirmation?"
+                "response": "Please provide your email address for order confirmation."
             }
 
         # Process input based on current state
@@ -234,6 +238,8 @@ async def calculate_sushi_price(args: FlowArgs) -> SushiOrderResult:
 
 async def confirm_order(args: FlowArgs) -> Optional[Dict[str, Any]]:
     input_text = args["input"].lower()
+    if "@" in input_text and "." in input_text:
+        return {"confirmed": True, "email": input_text}
     if "yes" in input_text or "complete" in input_text:
         return {"confirmed": True}
     elif "no" in input_text or "cancel" in input_text:
@@ -274,16 +280,6 @@ flow_config = FlowConfig(
                 {
                     "name": "parse_type",
                     "handler": parse_pizza_type,
-                    "transition": "calculate_pizza_price",
-                }
-            ],
-        },
-        "calculate_pizza_price": {
-            "prompt": "Calculating your order...",
-            "functions": [
-                {
-                    "name": "calculate_price",
-                    "handler": calculate_pizza_price,
                     "transition": "confirm",
                 }
             ],
@@ -304,28 +300,24 @@ flow_config = FlowConfig(
                 {
                     "name": "parse_type",
                     "handler": parse_sushi_type,
-                    "transition": "calculate_sushi_price",
-                }
-            ],
-        },
-        "calculate_sushi_price": {
-            "prompt": "Calculating your order...",
-            "functions": [
-                {
-                    "name": "calculate_price",
-                    "handler": calculate_sushi_price,
                     "transition": "confirm",
                 }
             ],
         },
         "confirm": {
-            "prompt": "Would you like to complete this order?",
+            "prompt": "Would you like to complete this order? Please provide your email address for order confirmation.",
             "functions": [
-                {"name": "confirm", "handler": confirm_order, "transition": "end"}
+                {
+                    "name": "confirm",
+                    "handler": confirm_order,
+                    "transition": lambda result: (
+                        "end" if result.get("confirmed") else "start"
+                    ),
+                }
             ],
         },
         "end": {
-            "prompt": "Would you like to provide an email address for order confirmation?",
+            "prompt": "Please provide your email address for order confirmation.",
             "functions": [],
         },
     },
