@@ -10,6 +10,7 @@ import json
 import os
 from datetime import datetime
 
+import aiohttp
 import boto3
 from dotenv import load_dotenv
 from loguru import logger
@@ -91,10 +92,69 @@ async def change_password_tool_impl(username: str, new_password: str):
     return {"success": True, "details": details}
 
 
+# --- Zapier MCP Gmail Tool Schema ---
+zapier_gmail_tool_schema = FunctionSchema(
+    name="send_order_confirmation",
+    description="Send an order confirmation email via Gmail using Zapier MCP.",
+    properties={
+        "to": {"type": "string", "description": "Recipient email address"},
+        "order_details": {"type": "string", "description": "Details of the food order"},
+    },
+    required=["to", "order_details"],
+)
+
+
+# --- Zapier MCP Gmail Tool Implementation ---
+async def zapier_gmail_tool_impl(to: str, order_details: str):
+    logger.info(
+        f"Sending order confirmation email to {to} with details: {order_details}"
+    )
+
+    # Zapier MCP endpoint - this should be stored securely in environment variables
+    ZAPIER_MCP_URL = os.getenv("ZAPIER_MCP_URL")
+    if not ZAPIER_MCP_URL:
+        raise Exception(
+            "Zapier MCP URL not configured. Please set ZAPIER_MCP_URL environment variable."
+        )
+
+    try:
+        # Prepare the MCP request
+        mcp_request = {
+            "action": "send_gmail",
+            "input": {
+                "to": to,
+                "subject": "Your Food Order Confirmation",
+                "body": order_details,
+            },
+        }
+
+        # Make the MCP request to Zapier
+        async with aiohttp.ClientSession() as session:
+            async with session.post(ZAPIER_MCP_URL, json=mcp_request) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return {
+                        "success": True,
+                        "details": "Order confirmation email sent successfully",
+                    }
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Zapier MCP request failed: {error_text}")
+                    return {
+                        "success": False,
+                        "details": f"Failed to send email: {error_text}",
+                    }
+
+    except Exception as e:
+        logger.error(f"Error sending email via Zapier MCP: {str(e)}")
+        return {"success": False, "details": f"Error: {str(e)}"}
+
+
 # --- Map Tool Names to Implementations ---
 tool_handlers = {
     "send_email": send_email_tool_impl,
     "change_password": change_password_tool_impl,
+    "send_order_confirmation": zapier_gmail_tool_impl,
 }
 
 # --- Function Schemas for Sub-Agent Tools (as before) ---
@@ -146,6 +206,7 @@ lead_tools_pipecat = ToolsSchema(standard_tools=[call_agent_tool_schema])
 
 # For Bedrock Sub-Agents (Amazon Nova Micro)
 agent1_tools_list_bedrock = [send_email_tool_schema, change_password_tool_schema]
+agent2_tools_list_bedrock = [zapier_gmail_tool_schema]
 
 
 # Helper to convert Pipecat FunctionSchema to Bedrock Converse API tool specification
@@ -180,18 +241,28 @@ def convert_pipecat_tools_to_bedrock_tool_config(pipecat_tools_list):
 # --- Sub-Agent Configurations ---
 sub_agent_configs = {
     "agent1": {
-        "system_prompt": "You are Agent1, an AI assistant specializing in email and password tasks. You must use the provided tools ('send_email', 'change_password') to fulfill requests. If an instruction lacks necessary details for a tool, ask clarifying questions to get all required parameters before using the tool. Respond with the outcome of the operation or any questions you have.",
+        "system_prompt": "You are an AI assistant specializing in email and password tasks. You must use the provided tools ('send_email', 'change_password') to fulfill requests. If an instruction lacks necessary details for a tool, ask clarifying questions to get all required parameters before using the tool. Respond with the outcome of the operation or any questions you have.",
         "tools_config": convert_pipecat_tools_to_bedrock_tool_config(
             agent1_tools_list_bedrock
         ),
         "model_id": "amazon.nova-micro-v1:0",  # As per doc section 2.3
     },
     "agent2": {
-        "system_prompt": "You are Agent2, an AI assistant that handles food ordering via a multi-step workflow. Use the food ordering flow to guide the user through their order. If the user wants to order food, start the flow and manage the conversation state.",
+        "system_prompt": "You are an AI assistant that handles food ordering. Guide the user through their order using the provided workflow. After an order is completed, you can send an order confirmation email using the 'send_order_confirmation' tool.",
         "flow_manager": FlowManager(flow_config=flow_config),
+        "tools_config": convert_pipecat_tools_to_bedrock_tool_config(
+            agent2_tools_list_bedrock
+        ),
         "model_id": "amazon.nova-micro-v1:0",
     },
 }
+
+# Update the system instruction to be more transparent and ensure audio responses
+SYSTEM_INSTRUCTION = (
+    "You are a friendly and helpful assistant. Your role is to understand the user's intent and provide appropriate assistance. "
+    "You can help with email tasks, password changes, or food ordering. Keep your responses concise and natural for voice interaction, typically 1-2 sentences. "
+    "When you first start, introduce yourself and list the available options: 'I can help you with email tasks, password changes, or food ordering. What would you like to do?'"
+)
 
 # --- Instantiate Lead Agent LLM Service (AWS Nova Sonic) ---
 lead_llm = AWSNovaSonicLLMService(
@@ -205,17 +276,13 @@ lead_llm = AWSNovaSonicLLMService(
     audio_input_enabled=True,  # Explicitly enable audio input
     audio_sample_rate=16000,  # Standard sample rate for Nova Sonic
     audio_channels=1,  # Mono audio
+    system_instruction=SYSTEM_INSTRUCTION,  # Add the system instruction here
 )
 
 # --- Create Context for Lead Agent ---
-lead_context = OpenAILLMContext(  # Pipecat context object for the lead agent
-    messages=[
-        {
-            "role": "system",
-            "content": "You are a friendly and helpful Lead Agent. Your role is to understand the user's intent and decide whether to answer directly or to delegate the task to a specialized sub-agent by using the 'call_agent' tool. 'agent1' handles email and password tasks. 'agent2' handles food ordering through a guided workflow. After a sub-agent responds, summarize its findings or actions clearly to the user. If a sub-agent cannot perform a task or returns an error, inform the user politely. Keep your responses concise and natural for voice interaction, typically 1-2 sentences. When you first start, introduce yourself and list the available options: 'I can help you with email tasks, password changes, or food ordering. What would you like to do?'",
-        }
-    ],
-    tools=lead_tools_pipecat,  # ToolsSchema for Pipecat
+lead_context = OpenAILLMContext(
+    messages=[{"role": "system", "content": SYSTEM_INSTRUCTION}],
+    tools=lead_tools_pipecat,
 )
 
 
@@ -243,6 +310,18 @@ async def call_agent(params: FunctionCallParams):
         flow_manager = agent_config["flow_manager"]
         # Pass the instruction as user input to the flow manager
         flow_result = await flow_manager.process_user_input(instruction_for_sub_agent)
+        # Ensure we have a valid response
+        if not flow_result or "response" not in flow_result:
+            logger.error("Invalid response from flow manager")
+            await params.result_callback(
+                {
+                    "result": "I apologize, but I'm having trouble processing your order. Could you please try again?"
+                }
+            )
+            return
+        # Log the response for debugging
+        logger.info(f"Flow manager response: {flow_result['response']}")
+        # Send the response back to the lead agent
         await params.result_callback({"result": flow_result["response"]})
         return
 

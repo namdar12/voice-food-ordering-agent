@@ -1,8 +1,9 @@
 # food_ordering_flow.py
 # Static food ordering flow for Agent2 (Pipecat Flows style)
 
-# Define minimal stubs for FlowArgs, FlowConfig, FlowManager, FlowResult if not available
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+from loguru import logger
 
 
 class FlowArgs(dict):
@@ -24,54 +25,111 @@ class FlowManager:
         self.flow_config = flow_config
         self.state = flow_config.initial_state
         self.context = {}
+        self.customer_email = None
 
     async def process_user_input(self, user_input: str) -> Dict[str, str]:
-        # Minimal state machine logic for demo/testing
-        # In real use, replace with actual Pipecat Flows logic
-        # For now, just echo the state and input
-        response = f"[State: {self.state}] {user_input}"
-        # Simulate state transition
-        if self.state == "start":
-            if "pizza" in user_input.lower():
-                self.state = "choose_pizza_size"
-                response = "What size pizza would you like? We have small ($10), medium ($15), or large ($20)."
-            elif "sushi" in user_input.lower():
-                self.state = "choose_sushi"
-                response = "How many rolls and what type of sushi?"
-            else:
-                response = "Please say pizza or sushi."
-        elif self.state == "choose_pizza_size":
-            size = user_input.lower().strip()
-            if size in ["small", "medium", "large"]:
-                self.context["size"] = size
-                self.state = "choose_pizza_type"
-                response = "What type of pizza would you like? We have cheese, pepperoni, vegetarian, or supreme."
-            else:
-                response = "Please choose small, medium, or large."
-        elif self.state == "choose_pizza_type":
-            pizza_type = user_input.lower().strip()
-            if pizza_type in ["cheese", "pepperoni", "vegetarian", "supreme"]:
-                self.context["type"] = pizza_type
-                self.state = "confirm"
-                response = f"Great! You've ordered a {self.context['size']} {self.context['type']} pizza. Would you like to complete this order?"
-            else:
-                response = "Please choose cheese, pepperoni, vegetarian, or supreme."
-        elif self.state == "choose_sushi":
-            self.state = "confirm"
-            response = "Review your sushi order. Would you like to complete it?"
-        elif self.state == "confirm":
-            if "yes" in user_input.lower() or "complete" in user_input.lower():
-                self.state = "end"
-                if "size" in self.context and "type" in self.context:
-                    response = f"Thank you for your order! Your {self.context['size']} {self.context['type']} pizza will be ready soon."
-                else:
-                    response = "Thank you for your order!"
-            else:
-                self.state = "start"
-                response = "Order cancelled. Would you like to start over?"
-        elif self.state == "end":
-            response = "Order complete."
-        return {"response": response}
+        current_state = self.flow_config.states[self.state]
+
+        # Handle email collection if in end state
+        if self.state == "end":
+            if self.customer_email:  # If we already have an email, don't ask again
+                return {"response": "Your order is complete! Thank you for your order."}
+            if "@" in user_input and "." in user_input:
+                self.customer_email = user_input
+                order_details = self._format_order_details()
+                if order_details:
+                    try:
+                        from multiPhone import zapier_gmail_tool_impl
+
+                        result = await zapier_gmail_tool_impl(
+                            self.customer_email, order_details
+                        )
+                        if result["success"]:
+                            return {
+                                "response": "Order confirmation email has been sent to your email address. Thank you for your order!"
+                            }
+                        else:
+                            return {
+                                "response": "Your order is complete, but I couldn't send the confirmation email. Please contact support."
+                            }
+                    except Exception as e:
+                        logger.error(f"Error sending confirmation email: {e}")
+                        return {
+                            "response": "Your order is complete, but I couldn't send the confirmation email. Please contact support."
+                        }
+            return {
+                "response": "Would you like to provide an email address for order confirmation?"
+            }
+
+        # Process input based on current state
+        for function in current_state.get("functions", []):
+            if function.get("handler"):
+                try:
+                    result = await function["handler"](
+                        FlowArgs({"input": user_input, "context": self.context})
+                    )
+                    if result:
+                        self.context.update(result)
+                        if function.get("transition"):
+                            # Handle both string and callable transitions
+                            if callable(function["transition"]):
+                                next_state = function["transition"](result)
+                                if next_state:
+                                    self.state = next_state
+                                    # Return the prompt for the new state
+                                    return {
+                                        "response": self.flow_config.states[next_state][
+                                            "prompt"
+                                        ]
+                                    }
+                            else:
+                                self.state = function["transition"]
+                                # Return the prompt for the new state
+                                return {
+                                    "response": self.flow_config.states[
+                                        function["transition"]
+                                    ]["prompt"]
+                                }
+                except Exception as e:
+                    logger.error(
+                        f"Error processing function {function.get('name')}: {e}"
+                    )
+
+        # If no function handled the input, return the current state's prompt
+        return {"response": current_state.get("prompt", "")}
+
+    def _format_order_details(self) -> Optional[str]:
+        if "size" in self.context and "type" in self.context:
+            return f"""
+            Order Confirmation
+
+            Your order has been received:
+            - Item: {self.context['size']} {self.context['type']} pizza
+            - Price: ${self.context.get('price', 'N/A')}
+            - Status: Confirmed
+            - Estimated preparation time: 20-30 minutes
+
+            Thank you for your order!
+            """
+        elif "count" in self.context and "type" in self.context:
+            return f"""
+            Order Confirmation
+
+            Your order has been received:
+            - Item: {self.context['count']} {self.context['type']} roll(s)
+            - Price: ${self.context.get('price', 'N/A')}
+            - Status: Confirmed
+            - Estimated preparation time: 15-25 minutes
+
+            Thank you for your order!
+            """
+        return None
+
+    def get_state(self) -> str:
+        return self.state
+
+    def get_context(self) -> dict:
+        return self.context.copy()
 
 
 # Type definitions
@@ -88,55 +146,187 @@ class SushiOrderResult(FlowResult):
 
 
 # Function handlers
-async def select_pizza_order(args: FlowArgs) -> PizzaOrderResult:
-    size = args["size"]
-    pizza_type = args["type"]
+async def parse_choice(args: FlowArgs) -> Optional[Dict[str, Any]]:
+    input_text = args["input"].lower()
+    if "pizza" in input_text:
+        return {"choice": "pizza"}
+    elif "sushi" in input_text:
+        return {"choice": "sushi"}
+    return None
+
+
+async def parse_pizza_size(args: FlowArgs) -> Optional[Dict[str, Any]]:
+    input_text = args["input"].lower()
+    size_map = {"small": "small", "medium": "medium", "large": "large"}
+    for key, value in size_map.items():
+        if key in input_text:
+            return {"size": value}
+    return None
+
+
+async def parse_pizza_type(args: FlowArgs) -> Optional[Dict[str, Any]]:
+    input_text = args["input"].lower()
+    type_map = {
+        "cheese": "cheese",
+        "pepperoni": "pepperoni",
+        "vegetarian": "vegetarian",
+        "supreme": "supreme",
+    }
+    for key, value in type_map.items():
+        if key in input_text:
+            return {"type": value}
+    return None
+
+
+async def parse_sushi_count(args: FlowArgs) -> Optional[Dict[str, Any]]:
+    input_text = args["input"].lower()
+    words = input_text.split()
+    number_map = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+    }
+
+    for word in words:
+        if word.isdigit():
+            return {"count": int(word)}
+        if word in number_map:
+            return {"count": number_map[word]}
+    return None
+
+
+async def parse_sushi_type(args: FlowArgs) -> Optional[Dict[str, Any]]:
+    input_text = args["input"].lower()
+    type_map = {
+        "california": "california",
+        "spicy tuna": "spicy tuna",
+        "salmon": "salmon",
+        "dragon": "dragon",
+        "tempura": "tempura",
+    }
+    for key, value in type_map.items():
+        if key in input_text:
+            return {"type": value}
+    return None
+
+
+async def calculate_pizza_price(args: FlowArgs) -> PizzaOrderResult:
+    size = args["context"]["size"]
+    pizza_type = args["context"]["type"]
     base_price = {"small": 10.00, "medium": 15.00, "large": 20.00}
     price = base_price[size]
     return {"size": size, "type": pizza_type, "price": price}
 
 
-async def select_sushi_order(args: FlowArgs) -> SushiOrderResult:
-    count = args["count"]
-    roll_type = args["type"]
+async def calculate_sushi_price(args: FlowArgs) -> SushiOrderResult:
+    count = args["context"]["count"]
+    roll_type = args["context"]["type"]
     price = 8.0 * count
     return {"count": count, "type": roll_type, "price": price}
 
 
-# Flow configuration (static, as in the example)
+async def confirm_order(args: FlowArgs) -> Optional[Dict[str, Any]]:
+    input_text = args["input"].lower()
+    if "yes" in input_text or "complete" in input_text:
+        return {"confirmed": True}
+    elif "no" in input_text or "cancel" in input_text:
+        return {"confirmed": False}
+    return None
+
+
+# Flow configuration
 flow_config = FlowConfig(
     states={
         "start": {
             "prompt": "Welcome! Would you like to order pizza or sushi?",
             "functions": [
-                {"name": "choose_pizza", "transition": "choose_pizza"},
-                {"name": "choose_sushi", "transition": "choose_sushi"},
+                {
+                    "name": "parse_choice",
+                    "handler": parse_choice,
+                    "transition": lambda result: (
+                        "choose_pizza_size"
+                        if result.get("choice") == "pizza"
+                        else "choose_sushi_count"
+                    ),
+                }
             ],
         },
-        "choose_pizza": {
-            "prompt": "What size pizza (small, medium, large) and what type?",
+        "choose_pizza_size": {
+            "prompt": "What size pizza would you like? We have small ($10), medium ($15), or large ($20).",
             "functions": [
-                {"name": "select_pizza_order", "handler": select_pizza_order},
-                {"name": "confirm_order", "transition": "confirm"},
+                {
+                    "name": "parse_size",
+                    "handler": parse_pizza_size,
+                    "transition": "choose_pizza_type",
+                }
             ],
         },
-        "choose_sushi": {
-            "prompt": "How many rolls and what type of sushi?",
+        "choose_pizza_type": {
+            "prompt": "What type of pizza would you like? We have cheese, pepperoni, vegetarian, or supreme.",
             "functions": [
-                {"name": "select_sushi_order", "handler": select_sushi_order},
-                {"name": "confirm_order", "transition": "confirm"},
+                {
+                    "name": "parse_type",
+                    "handler": parse_pizza_type,
+                    "transition": "calculate_pizza_price",
+                }
+            ],
+        },
+        "calculate_pizza_price": {
+            "prompt": "Calculating your order...",
+            "functions": [
+                {
+                    "name": "calculate_price",
+                    "handler": calculate_pizza_price,
+                    "transition": "confirm",
+                }
+            ],
+        },
+        "choose_sushi_count": {
+            "prompt": "How many rolls would you like? We have California, Spicy Tuna, Salmon, Dragon, and Tempura rolls. Each roll is $8.",
+            "functions": [
+                {
+                    "name": "parse_count",
+                    "handler": parse_sushi_count,
+                    "transition": "choose_sushi_type",
+                }
+            ],
+        },
+        "choose_sushi_type": {
+            "prompt": "What type of roll would you like? We have California, Spicy Tuna, Salmon, Dragon, and Tempura rolls.",
+            "functions": [
+                {
+                    "name": "parse_type",
+                    "handler": parse_sushi_type,
+                    "transition": "calculate_sushi_price",
+                }
+            ],
+        },
+        "calculate_sushi_price": {
+            "prompt": "Calculating your order...",
+            "functions": [
+                {
+                    "name": "calculate_price",
+                    "handler": calculate_sushi_price,
+                    "transition": "confirm",
+                }
             ],
         },
         "confirm": {
-            "prompt": "Review your order. Would you like to complete it?",
+            "prompt": "Would you like to complete this order?",
             "functions": [
-                {"name": "complete_order", "transition": "end"},
+                {"name": "confirm", "handler": confirm_order, "transition": "end"}
             ],
         },
         "end": {
-            "prompt": "Thank you for your order!",
+            "prompt": "Would you like to provide an email address for order confirmation?",
             "functions": [],
-            "post_actions": [{"type": "end_conversation"}],
         },
     },
     initial_state="start",
