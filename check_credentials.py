@@ -6,12 +6,23 @@ import boto3
 
 print("--- Starting Boto3 Credential Verification ---")
 
-profile_name = "e360-AdministratorAccess-120569624902"
-region_name = "us-east-1"  # The region where Bedrock is expected to be accessed
+profile_name = os.getenv("AWS_PROFILE")  # optional: an AWS CLI/SSO profile name
+region_name = os.getenv(
+    "AWS_REGION", "us-east-1"
+)  # The region where Bedrock is expected to be accessed
 
 try:
     print(f"Attempting to create boto3 session with profile: {profile_name}")
-    session = boto3.Session(profile_name=profile_name)
+    session = (
+        boto3.Session(profile_name=profile_name)
+        if profile_name
+        else boto3.Session(
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            aws_session_token=os.getenv("AWS_SESSION_TOKEN"),
+            region_name=region_name,
+        )
+    )
 
     print("Attempting to get credentials...")
     credentials = session.get_credentials()

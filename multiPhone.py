@@ -40,35 +40,29 @@ load_dotenv(override=True)
 BASE_FILENAME = "/tmp/pipecat_conversation_"  # Not actively used in this script snippet
 
 # --- Credentials Setup ---
-AWS_PROFILE_NAME = "e360-AdministratorAccess-120569624902"
-AWS_REGION = "us-east-1"
+# Provide AWS credentials via environment variables (see .env.example):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN (optional), AWS_REGION
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 
-# Get the credentials from the session
-session = boto3.Session(profile_name=AWS_PROFILE_NAME)
+session = boto3.Session(
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    aws_session_token=os.getenv("AWS_SESSION_TOKEN"),
+    region_name=AWS_REGION,
+)
 
 # Get the credentials from the session
 credentials = session.get_credentials()
 if credentials is None:
-    raise Exception("No AWS credentials found. Please run 'aws sso login' first.")
-
-# Create a new session with the frozen credentials
-session = boto3.Session(
-    aws_access_key_id=credentials.access_key,
-    aws_secret_access_key=credentials.secret_key,
-    aws_session_token=credentials.token,
-    region_name=AWS_REGION,
-)
-
-print("session ", session)
-print("credentials ", credentials.access_key)
+    raise Exception(
+        "No AWS credentials found. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY "
+        "(see .env.example)."
+    )
 
 # Bedrock Runtime Client (for Sub-Agents)
 bedrock_runtime = session.client(
     service_name="bedrock-runtime",
     region_name=AWS_REGION,
-    aws_access_key_id=credentials.access_key,
-    aws_secret_access_key=credentials.secret_key,
-    aws_session_token=credentials.token,
 )
 logger.info(f"Using AWS Region: {AWS_REGION} for Bedrock.")
 

@@ -1,10 +1,17 @@
-.venv/
+# Secrets & local config — never commit these
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env.development
-.env.test
-.env.production
+.env.*
+!.env.example
+
+# Python
 __pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Build artifacts
+*.zip
+
+# OS / editor
+.DS_Store
+*.log

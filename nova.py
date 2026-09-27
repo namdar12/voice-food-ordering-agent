@@ -193,24 +193,21 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection, _: argparse.Namespac
         f"{AWSNovaSonicLLMService.AWAIT_TRIGGER_ASSISTANT_RESPONSE_INSTRUCTION}"
     )
 
-    # Get the credentials from the session
-    session = boto3.Session(profile_name="e360-AdministratorAccess-120569624902")
+    # Get the credentials from the session (via AWS_* environment variables, see .env.example)
+    session = boto3.Session(
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        aws_session_token=os.getenv("AWS_SESSION_TOKEN"),
+        region_name=os.getenv("AWS_REGION", "us-east-1"),
+    )
 
     # Get the credentials from the session
     credentials = session.get_credentials()
     if credentials is None:
-        raise Exception("No AWS credentials found. Please run 'aws sso login' first.")
-
-    # Create a new session with the frozen credentials
-    session = boto3.Session(
-        aws_access_key_id=credentials.access_key,
-        aws_secret_access_key=credentials.secret_key,
-        aws_session_token=credentials.token,
-        region_name="us-east-1",
-    )
-
-    print("session ", session)
-    print("credentials ", credentials.access_key)
+        raise Exception(
+            "No AWS credentials found. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY "
+            "(see .env.example)."
+        )
 
     # Create the AWS Nova Sonic service with the session token
     llm = AWSNovaSonicLLMService(
